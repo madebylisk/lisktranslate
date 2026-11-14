@@ -8,6 +8,11 @@ from pathlib import Path
 
 
 def config_path() -> Path:
+    override = os.environ.get("LISKTRANSLATE_CONFIG")
+    if override:
+        path = Path(override)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
     root = os.environ.get("APPDATA") or str(Path.home())
     folder = Path(root) / "lisktranslate"
     folder.mkdir(parents=True, exist_ok=True)

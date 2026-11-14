@@ -5,12 +5,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+WORD_GAP = 8
+GRAMMAR_GAP = 14
+_GRAMMAR = {"助詞", "助動詞"}
+_OPENERS = set("「『（([【〈《｛{")
+_CLOSERS = set("」』）)]】〉》｝}、。！？!?…・,.，．")
+
+
 @dataclass
 class Token:
     surface: str
     reading: str | None = None
     break_line: bool = False
     header: bool = False
+    gap_before: int = 0
+    lemma: str = ""
+    pos: str = ""
+    kana: str = ""
+    grammar: bool = False
+    muted: bool = False
 
 
 def kata_to_hira(text: str) -> str:
@@ -46,7 +59,7 @@ class Furigana:
 
         self._tagger = fugashi.Tagger('-r nul -d "{}"'.format(unidic_lite.DICDIR))
 
-    def tokens(self, text: str) -> list[Token]:
+    def tokens(self, text: str, spacing: bool = False) -> list[Token]:
         tokens: list[Token] = []
         for index, line in enumerate(text.split("\n")):
             if index:
@@ -55,9 +68,54 @@ class Furigana:
                 surface = word.surface
                 if not surface:
                     continue
-                kana = getattr(word.feature, "kana", None)
+                feature = word.feature
+                kana = getattr(feature, "kana", None)
+                hiragana = ""
                 reading = None
-                if kana and kana != "*":
-                    reading = _hide_reading(surface, kata_to_hira(str(kana)))
-                tokens.append(Token(surface, reading))
+                if kana and str(kana) != "*":
+                    hiragana = kata_to_hira(str(kana))
+                    reading = _hide_reading(surface, hiragana)
+                pos = str(getattr(feature, "pos1", "") or "")
+                lemma = str(getattr(feature, "lemma", "") or "")
+                if lemma == "*":
+                    lemma = ""
+                tokens.append(
+                    Token(
+                        surface,
+                        reading,
+                        lemma=lemma,
+                        pos=pos,
+                        kana=hiragana,
+                        grammar=pos in _GRAMMAR,
+                    )
+                )
+        if spacing:
+            _apply_spacing(tokens)
         return tokens
+
+
+def _apply_spacing(tokens: list[Token]) -> None:
+    previous: Token | None = None
+    for token in tokens:
+        if token.break_line or token.header:
+            previous = None
+            continue
+        token.gap_before = _gap(previous, token)
+        token.muted = token.grammar
+        previous = token
+
+
+def _gap(previous: Token | None, token: Token) -> int:
+    if previous is None:
+        return 0
+    if token.surface and all(ch in _CLOSERS for ch in token.surface):
+        return 0
+    if previous.surface and all(ch in _OPENERS for ch in previous.surface):
+        return 0
+    if token.pos == "接尾辞":
+        return 3
+    if previous.pos == "接頭辞":
+        return 0
+    if token.grammar or previous.grammar:
+        return GRAMMAR_GAP
+    return WORD_GAP

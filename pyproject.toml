@@ -12,6 +12,7 @@ dependencies = [
     "winocr>=0.0.15",
     "fugashi>=1.3",
     "unidic-lite>=1.0.8",
+    "jamdict>=0.1a11",
 ]
 
 [project.scripts]

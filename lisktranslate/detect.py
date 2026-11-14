@@ -74,6 +74,7 @@ class FrameTracker:
 
     def __init__(self) -> None:
         self.text = ""
+        self.english = ""
         self._last: Image.Image | None = None
         self._ocr: Image.Image | None = None
         self._size: tuple[int, int] | None = None
@@ -108,4 +109,5 @@ class FrameTracker:
         if self.text and levenshtein(self.text, text) < TEXT_DISTANCE:
             return False
         self.text = text
+        self.english = ""
         return True

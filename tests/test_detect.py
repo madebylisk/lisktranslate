@@ -18,9 +18,12 @@ class DetectTests(unittest.TestCase):
     def test_small_ocr_flicker_does_not_replace_text(self):
         tracker = FrameTracker()
         self.assertTrue(tracker.accept_text("こんにちは"))
+        tracker.english = "Hello"
         self.assertFalse(tracker.accept_text("こんにちわ"))
         self.assertEqual(tracker.text, "こんにちは")
+        self.assertEqual(tracker.english, "Hello")
         self.assertTrue(tracker.accept_text("こんにちは。元気？"))
+        self.assertEqual(tracker.english, "")
 
     def test_unchanged_image_is_not_sent_twice(self):
         tracker = FrameTracker()

@@ -10,27 +10,25 @@ from lisktranslate.furigana import Token
 
 
 class RubyWord(QWidget):
-    def __init__(self, surface: str, reading: str | None) -> None:
+    def __init__(self, surface: str, reading: str | None, gap_before: int = 0, show_reading_row: bool = True, muted: bool = False) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(1, 0, 3, 0)
+        layout.setContentsMargins(gap_before + 1, 0, 3, 0)
         layout.setSpacing(0)
-        self.reading = QLabel(reading or " ")
-        self.reading.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
-        self.reading.setFont(QFont("Yu Gothic UI", 8))
+        if show_reading_row:
+            self.reading = QLabel(reading or " ")
+            self.reading.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+            self.reading.setFont(QFont("Yu Gothic UI", 8))
+            self.reading.setStyleSheet("color: #a7f3d0;" if reading else "color: transparent;")
+            self.reading.setFixedHeight(QFontMetrics(self.reading.font()).height())
+            layout.addWidget(self.reading)
         self.surface = QLabel(surface)
         self.surface.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.surface.setFont(QFont("Yu Gothic UI", 15))
         self.surface.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.reading.setStyleSheet("color: #a7f3d0;" if reading else "color: transparent;")
-        self.reading.setFixedHeight(QFontMetrics(self.reading.font()).height())
-        layout.addWidget(self.reading)
+        self.surface.setStyleSheet("color: #b9babf;" if muted else "color: #ececec;")
         layout.addWidget(self.surface)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-
-    def sizeHint(self):
-        hint = super().sizeHint()
-        return hint
 
 
 class _Flow(QWidget):
@@ -38,7 +36,7 @@ class _Flow(QWidget):
         super().__init__()
         self._items: list[QWidget | None] = []
 
-    def set_tokens(self, tokens: list[Token]) -> None:
+    def set_tokens(self, tokens: list[Token], show_readings: bool = True) -> None:
         for item in self._items:
             if item is not None:
                 item.setParent(None)
@@ -56,7 +54,13 @@ class _Flow(QWidget):
                 self._items.append(label)
                 self._items.append(None)
                 continue
-            word = RubyWord(token.surface, token.reading)
+            word = RubyWord(
+                token.surface,
+                token.reading if show_readings else None,
+                token.gap_before,
+                show_reading_row=show_readings,
+                muted=token.muted,
+            )
             word.setParent(self)
             self._items.append(word)
         self._layout_rows()
@@ -100,46 +104,72 @@ class TextPanel(QScrollArea):
         self.placeholder = QLabel("Text shows up here after a region settles.")
         self.placeholder.setWordWrap(True)
         self.placeholder.setStyleSheet("color: #8b8d93;")
-        self.plain = QLabel()
-        self.plain.setWordWrap(True)
-        self.plain.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.plain.setFont(QFont("Yu Gothic UI", 14))
-        self.plain.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.plain.hide()
-        self.flow = _Flow()
-        self.flow.hide()
+        self._flows: list[_Flow] = []
+        self._wrap_labels: list[QLabel] = []
+        self.sections = QVBoxLayout()
+        self.sections.setSpacing(16)
         layout.addWidget(self.placeholder)
-        layout.addWidget(self.plain)
-        layout.addWidget(self.flow)
+        layout.addLayout(self.sections)
         layout.addStretch(1)
         self.setWidget(self.holder)
 
-    def show_plain(self, text: str) -> None:
-        self.flow.hide()
-        self.plain.setText(text)
-        has_text = bool(text.strip())
-        self.plain.setVisible(has_text)
-        self.placeholder.setVisible(not has_text)
-        self._fit_plain()
-
-    def show_ruby(self, tokens: list[Token]) -> None:
-        self.plain.hide()
-        has_text = any(not token.break_line and token.surface for token in tokens)
-        self.placeholder.setVisible(not has_text)
-        self.flow.setVisible(has_text)
-        if has_text:
-            self._fit_flow()
-            self.flow.set_tokens(tokens)
+    def show_sections(self, sections: list[tuple[str, str, list[Token] | None, str, bool]]) -> None:
+        self._clear_sections()
+        self.placeholder.setVisible(not sections)
+        width = self._content_width()
+        for title, japanese, tokens, english, show_readings in sections:
+            block = QWidget()
+            block_layout = QVBoxLayout(block)
+            block_layout.setContentsMargins(0, 0, 0, 0)
+            block_layout.setSpacing(6)
+            if title:
+                heading = QLabel(title)
+                heading.setFont(QFont("Yu Gothic UI", 9))
+                heading.setStyleSheet("color: #a1a1aa;")
+                block_layout.addWidget(heading)
+            if tokens is not None:
+                flow = _Flow()
+                flow.setFixedWidth(width)
+                flow.set_tokens(tokens, show_readings=show_readings)
+                self._flows.append(flow)
+                block_layout.addWidget(flow)
+            else:
+                source = self._wrapping_label(japanese, QFont("Yu Gothic UI", 14), "#ececec")
+                source.setFixedWidth(width)
+                block_layout.addWidget(source)
+            if english:
+                translation = self._wrapping_label(english, QFont("Segoe UI", 13), "#d6e4dc")
+                translation.setFixedWidth(width)
+                block_layout.addWidget(translation)
+            self.sections.addWidget(block)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._fit_plain()
-        if self.flow.isVisible():
-            self._fit_flow()
+        width = self._content_width()
+        for label in self._wrap_labels:
+            label.setFixedWidth(width)
+        for flow in self._flows:
+            flow.setFixedWidth(width)
 
-    def _fit_plain(self) -> None:
-        width = max(40, self.viewport().width() - 28)
-        self.plain.setFixedWidth(width)
+    def _content_width(self) -> int:
+        return max(40, self.viewport().width() - 28)
 
-    def _fit_flow(self) -> None:
-        self.flow.setFixedWidth(max(40, self.viewport().width() - 28))
+    def _wrapping_label(self, text: str, font: QFont, color: str) -> QLabel:
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setFont(font)
+        label.setStyleSheet(f"color: {color};")
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._wrap_labels.append(label)
+        return label
+
+    def _clear_sections(self) -> None:
+        while self.sections.count():
+            item = self.sections.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._flows.clear()
+        self._wrap_labels.clear()
