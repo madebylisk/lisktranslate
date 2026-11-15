@@ -54,15 +54,21 @@ class _Worker(QThread):
     def stop(self) -> None:
         self._queue.put(None)
 
-    def _english(self, text: str) -> tuple[str, str]:
-        if not self.want_english or not text.strip():
-            return "", ""
+    def _translate_rows(self, rows: list[dict]) -> None:
+        pending = [row for row in rows if row["text"].strip() and not row["err"]]
+        if not self.want_english or not pending:
+            return
         try:
             if self._translator is None:
                 self._translator = Translator()
-            return self._translator.english(text), ""
+            translated = self._translator.english_many([row["text"] for row in pending])
         except Exception as exc:
-            return "", str(exc)
+            message = str(exc)
+            for row in pending:
+                row["err"] = message
+            return
+        for row, english in zip(pending, translated):
+            row["english"] = english
 
     def run(self) -> None:
         try:
@@ -76,24 +82,24 @@ class _Worker(QThread):
             if job is None:
                 return
             kind, batch = job
-            results = []
+            rows = []
             if kind == "translate":
                 for region_id, text in batch:
-                    english, err = self._english(text)
-                    results.append(("translate", region_id, text, english, err))
+                    rows.append({"id": region_id, "text": text, "english": "", "err": ""})
             else:
                 for region_id, image in batch:
                     if self.service is None or not self.service.available:
                         message = self.service.status_line if self.service else "OCR is unavailable."
-                        results.append(("ocr", region_id, "", "", message))
+                        rows.append({"id": region_id, "text": "", "english": "", "err": message})
                         continue
                     try:
                         text = self.service.recognize(image)
                     except Exception as exc:
-                        results.append(("ocr", region_id, "", "", str(exc)))
+                        rows.append({"id": region_id, "text": "", "english": "", "err": str(exc)})
                         continue
-                    english, err = self._english(text)
-                    results.append(("ocr", region_id, text, english, err))
+                    rows.append({"id": region_id, "text": text, "english": "", "err": ""})
+            self._translate_rows(rows)
+            results = [(kind, row["id"], row["text"], row["english"], row["err"]) for row in rows]
             engine = self.service.engine_name if self.service else "unavailable"
             self.batch_done.emit((results, engine))
 
@@ -171,6 +177,8 @@ class MainWindow(QMainWindow):
         self._next_id = 1
         self._inflight = False
         self._translate_after = False
+        self._translate_retry = False
+        self._translate_failures = 0
         self._picking = False
         self._saw_click = False
         self._closing = False
@@ -273,10 +281,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.panel, 1)
         self.dictionary = DictionaryWindow()
         self.dictionary.closed.connect(self._on_dictionary_closed)
-
-        copy = QPushButton("Copy text")
-        copy.clicked.connect(self._copy)
-        layout.addWidget(copy)
 
         self._engine = "Starting OCR…"
         self.resize(440, 580)
@@ -631,6 +635,8 @@ class MainWindow(QMainWindow):
                 if tracker.text == text and english != tracker.english:
                     tracker.english = english
                     changed = True
+                    if english:
+                        self._translate_failures = 0
                 continue
             if err and not text:
                 error = err
@@ -639,20 +645,46 @@ class MainWindow(QMainWindow):
             if err:
                 error = err
             if tracker.accept_text(text):
+                self._translate_failures = 0
                 tracker.english = english
                 changed = True
             elif text == tracker.text and english and english != tracker.english:
+                self._translate_failures = 0
                 tracker.english = english
                 changed = True
         if changed:
             self._refresh_panel()
-        if error:
+        if error and "429" in error:
+            self.status.setText("English is busy, retrying…")
+        elif error:
             self.status.setText(error)
         else:
             self._set_status()
         if self._translate_after and not self._closing:
             self._translate_after = False
             self._request_translations()
+        elif error and "429" in error:
+            self._schedule_translate_retry()
+
+    def _schedule_translate_retry(self) -> None:
+        if self._translate_retry or self._closing:
+            return
+        self._translate_failures += 1
+        if self._translate_failures > 4:
+            self.status.setText("English is busy. It will try again on the next line.")
+            return
+        self._translate_retry = True
+        delay = min(12000, 1500 * self._translate_failures)
+        QTimer.singleShot(delay, self._retry_english)
+
+    def _retry_english(self) -> None:
+        self._translate_retry = False
+        if self._closing or not self.english_box.isChecked():
+            return
+        if self._inflight:
+            self._translate_after = True
+            return
+        self._request_translations()
 
     def _set_engine(self, text: str) -> None:
         self._engine = text
@@ -705,27 +737,6 @@ class MainWindow(QMainWindow):
             )
         self.panel.show_sections(sections)
         self._refresh_dictionary(collected)
-
-    def _plain_text(self) -> str:
-        chunks = []
-        multiple = len(self.regions) > 1
-        show_english = self.english_box.isChecked()
-        for region in self.regions:
-            tracker = self.trackers[region.region_id]
-            text = tracker.text.strip()
-            if not text:
-                continue
-            parts = []
-            if multiple:
-                parts.append(f"Region {region.index}")
-            parts.append(text)
-            if show_english and tracker.english.strip():
-                parts.append(tracker.english.strip())
-            chunks.append("\n".join(parts))
-        return "\n\n".join(chunks)
-
-    def _copy(self) -> None:
-        QGuiApplication.clipboard().setText(self._plain_text())
 
     def _save(self) -> None:
         geometry = self.geometry()

@@ -1,10 +1,19 @@
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
 from lisktranslate.app import MainWindow
+
+
+def _app_id() -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Lisk.LiskTranslate")
 
 
 def _dark(app: QApplication) -> None:
@@ -23,9 +32,13 @@ def _dark(app: QApplication) -> None:
     palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#ececec"))
     palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8b8d93"))
     app.setPalette(palette)
+    icon = Path(__file__).with_name("icon.png")
+    if icon.is_file():
+        app.setWindowIcon(QIcon(str(icon)))
 
 
 def main() -> None:
+    _app_id()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )

@@ -24,3 +24,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["lisktranslate*"]
+
+[tool.setuptools.package-data]
+lisktranslate = ["icon.png", "icon.ico"]
