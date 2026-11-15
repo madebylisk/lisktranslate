@@ -1,6 +1,6 @@
 import unittest
 
-from lisktranslate.layout import assemble, guess_vertical
+from lisktranslate.layout import assemble, guess_vertical, split_speaker
 
 
 class LayoutTests(unittest.TestCase):
@@ -33,6 +33,36 @@ class LayoutTests(unittest.TestCase):
             ]
         )
         self.assertEqual(text, "今日はいい天気")
+
+    def test_nameplate_stays_out_of_the_sentence(self):
+        text = assemble(
+            [
+                ("街人", (12, 4, 78, 28)),
+                ("よう、外は寒かっただろ！", (12, 52, 540, 80)),
+                ("温かいスープはどうだい？", (12, 100, 380, 128)),
+            ]
+        )
+        speaker, body = split_speaker(text)
+        self.assertEqual(speaker, "街人")
+        self.assertEqual(body, "よう、外は寒かっただろ！\n温かいスープはどうだい？")
+
+    def test_hiragana_and_tight_wraps_stay_in_the_sentence(self):
+        exclamation = assemble(
+            [
+                ("えっ", (10, 0, 60, 24)),
+                ("本当に行くの？", (10, 48, 300, 76)),
+            ]
+        )
+        self.assertEqual(split_speaker(exclamation)[0], "")
+        self.assertIn("えっ", exclamation)
+        wrapped = assemble(
+            [
+                ("今日", (0, 0, 48, 20)),
+                ("はいい天気ですね。", (0, 22, 240, 42)),
+            ]
+        )
+        self.assertEqual(split_speaker(wrapped)[0], "")
+        self.assertIn("今日", wrapped)
 
     def test_vertical_columns_read_right_to_left(self):
         boxes = [(100, 0, 120, 200), (70, 0, 90, 200)]

@@ -17,9 +17,11 @@ lisktranslate
 
 - Right-click a box, or use **Remove**, to delete a region. **Remove** still works when the frames are hidden.
 - **Bind window** then click the game. The boxes follow that window. Click **Unbind** to stop. Esc cancels the click.
+- **Save** keeps the current boxes under a name. Pick a name from **Layout** to switch games. **Delete** removes that saved layout and leaves the boxes where they are.
 - **Pause** stops recognition.
 - **Furigana** shows kana above kanji. The text in the window can be selected.
 - **Click through** lets the mouse reach the game. **Hide frames** does that and hides the boxes. Turn them off from this window.
+- **History** opens a window of this session's lines, with furigana and the English under each line.
 
 Regions are saved in `%APPDATA%\lisktranslate\config.json`. The OCR files are copied once to `%LOCALAPPDATA%\lisktranslate\oneocr`.
 

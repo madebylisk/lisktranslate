@@ -190,6 +190,65 @@ def _merge_nearby(items: list[Line], vertical: bool, space: str, gap_ratio: floa
     return merged_lines
 
 
+def _is_nameplate(text: str) -> bool:
+    """A short speaker label, not the start of a sentence."""
+    text = "".join(text.split())
+    if not text or len(text) > 8:
+        return False
+    if any(ch in "。！？、,.!?…・" for ch in text):
+        return False
+    named = False
+    for ch in text:
+        code = ord(ch)
+        if 0x30A0 <= code <= 0x30FF or 0x3400 <= code <= 0x9FFF or 0xF900 <= code <= 0xFAFF:
+            named = True
+            continue
+        if 0x3040 <= code <= 0x309F or ch in "々〆ヶ":
+            continue
+        return False
+    return named
+
+
+def _peel_nameplate(items: list[Line]) -> tuple[str, list[Line]]:
+    """Drop a speaker label that sits above the dialogue, like a nameplate."""
+    if len(items) < 2:
+        return "", items
+    ordered = sorted(items, key=lambda item: (item[1][1], item[1][0]))
+    text, box = ordered[0]
+    if not _is_nameplate(text):
+        return "", items
+    below = [item for item in ordered[1:] if (item[1][1] + item[1][3]) / 2 > box[3]]
+    if not below:
+        return "", items
+    height = box[3] - box[1]
+    gap = min(other[1] for _, other in below) - box[3]
+    if height <= 0 or gap < 0.4 * height:
+        return "", items
+    left = min(other[0] for _, other in below)
+    right = max(other[2] for _, other in below)
+    width = right - left
+    name_width = box[2] - box[0]
+    if width <= 0 or name_width > 0.55 * width:
+        return "", items
+    mid = (box[0] + box[2]) / 2
+    if mid < left - height or mid > right + height:
+        return "", items
+    body = "".join(part for part, _ in ordered[1:])
+    if len(body) < len(text) + 4 or not any(ch in body for ch in "。！？!?"):
+        return "", items
+    return text, ordered[1:]
+
+
+def split_speaker(text: str) -> tuple[str, str]:
+    """Split a marked nameplate off the dialogue. Other text is returned unchanged."""
+    if not text.startswith("\x1e"):
+        return "", text
+    speaker, sep, body = text[1:].partition("\n")
+    if not sep or not body.strip():
+        return "", text
+    return speaker.strip(), body
+
+
 def assemble(items: list[Line], *, vertical: bool | None = None, space: str | None = None) -> str:
     """Turn OCR fragments into one string, in reading order."""
     cleaned: list[Line] = []
@@ -208,11 +267,18 @@ def assemble(items: list[Line], *, vertical: bool | None = None, space: str | No
         space = "" if _mostly_cjk("".join(text for text, _ in cleaned)) else " "
     if vertical is None:
         vertical = guess_vertical([box for _, box in cleaned])
-    merged = _merge_nearby(cleaned, vertical, space)
+    speaker = ""
+    working = cleaned
+    if not vertical:
+        speaker, working = _peel_nameplate(working)
+    merged = _merge_nearby(working, vertical, space)
     lines = sort_lines(
         [box for _, box in merged],
         [text for text, _ in merged],
         vertical,
         space,
     )
-    return "\n".join(text for text, _ in lines if text)
+    body = "\n".join(text for text, _ in lines if text)
+    if speaker and body:
+        return f"\x1e{speaker}\n{body}"
+    return body

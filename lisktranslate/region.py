@@ -55,6 +55,7 @@ class RegionFrame(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # The frame sits on the game. Leave it out of screenshots so OCR does not read the border.
         win32.exclude_from_capture(int(self.winId()))
         self._apply_mouse()
 

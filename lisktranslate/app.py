@@ -8,11 +8,15 @@ from PySide6.QtCore import QPoint, QRect, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -27,11 +31,41 @@ from lisktranslate.capture import (
 from lisktranslate.detect import FrameTracker
 from lisktranslate.dictionary import Dictionary, dictionary_ready
 from lisktranslate.dictionary_window import DictionaryWindow
-from lisktranslate.furigana import Furigana
+from lisktranslate.history_window import HistoryWindow
+from lisktranslate.furigana import Furigana, Token
+from lisktranslate.layout import split_speaker
 from lisktranslate.ocr_engine import OcrService
 from lisktranslate.panel import TextPanel
 from lisktranslate.region import RegionFrame
 from lisktranslate.translate import Translator
+
+
+def normalize_layouts(raw) -> dict[str, dict]:
+    if not isinstance(raw, dict):
+        return {}
+    layouts = {}
+    for name, record in raw.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(record, dict):
+            continue
+        regions = []
+        for item in record.get("regions") or []:
+            if not isinstance(item, dict) or not {"x", "y", "w", "h"} <= item.keys():
+                continue
+            rel = item.get("rel")
+            regions.append(
+                {
+                    "x": int(item["x"]),
+                    "y": int(item["y"]),
+                    "w": int(item["w"]),
+                    "h": int(item["h"]),
+                    "rel": [int(value) for value in rel] if isinstance(rel, (list, tuple)) and len(rel) == 4 else None,
+                }
+            )
+        layouts[name.strip()] = {
+            "bound_title": str(record.get("bound_title") or ""),
+            "regions": regions,
+        }
+    return layouts
 
 
 class _Worker(QThread):
@@ -61,7 +95,9 @@ class _Worker(QThread):
         try:
             if self._translator is None:
                 self._translator = Translator()
-            translated = self._translator.english_many([row["text"] for row in pending])
+            translated = self._translator.english_many(
+                [split_speaker(row["text"])[1] for row in pending]
+            )
         except Exception as exc:
             message = str(exc)
             for row in pending:
@@ -187,7 +223,12 @@ class MainWindow(QMainWindow):
         self._dict_generation = 0
         self._dict_signature: tuple | None = None
         self._dictionary_placed = False
+        self._history_placed = False
         self._saved = config.load()
+        self._layouts = normalize_layouts(self._saved.get("layouts"))
+        self._layout_name = str(self._saved.get("layout") or "")
+        if self._layout_name not in self._layouts:
+            self._layout_name = ""
         self.furigana = self._load_furigana()
         self._build()
         self._restore()
@@ -198,6 +239,8 @@ class MainWindow(QMainWindow):
         self.worker.start()
         if self.dictionary_box.isChecked():
             self._on_dictionary(True)
+        if self.history_box.isChecked():
+            self._on_history(True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(100)
@@ -238,6 +281,23 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.pause_button)
         layout.addLayout(buttons)
 
+        layouts = QHBoxLayout()
+        self.layout_box = QComboBox()
+        self.layout_box.setPlaceholderText("Layout")
+        self.layout_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.layout_box.setToolTip("Switch between saved region layouts")
+        self.layout_box.activated.connect(self._on_layout_picked)
+        self.save_layout_button = QPushButton("Save")
+        self.save_layout_button.setToolTip("Save these regions under a name")
+        self.save_layout_button.clicked.connect(self._save_layout_as)
+        self.delete_layout_button = QPushButton("Delete")
+        self.delete_layout_button.setToolTip("Delete the selected layout")
+        self.delete_layout_button.clicked.connect(self._delete_layout)
+        layouts.addWidget(self.layout_box, 1)
+        layouts.addWidget(self.save_layout_button)
+        layouts.addWidget(self.delete_layout_button)
+        layout.addLayout(layouts)
+
         self.furigana_box = QCheckBox("Furigana")
         self.furigana_box.setChecked(bool(self._saved.get("furigana", True)))
         if self.furigana is None:
@@ -258,12 +318,16 @@ class MainWindow(QMainWindow):
         self.dictionary_box = QCheckBox("Dictionary")
         self.dictionary_box.setToolTip("Look up kanji offline")
         self.dictionary_box.setChecked(bool(self._saved.get("dictionary", False)))
+        self.history_box = QCheckBox("History")
+        self.history_box.setToolTip("Japanese and English from this session")
+        self.history_box.setChecked(bool(self._saved.get("history", False)))
         self.furigana_box.toggled.connect(self._on_options)
         self.spacing_box.toggled.connect(self._on_options)
         self.english_box.toggled.connect(self._on_english)
         self.click_box.toggled.connect(self._on_options)
         self.hide_box.toggled.connect(self._on_options)
         self.dictionary_box.toggled.connect(self._on_dictionary)
+        self.history_box.toggled.connect(self._on_history)
         reading = QHBoxLayout()
         reading.addWidget(self.furigana_box)
         reading.addWidget(self.spacing_box)
@@ -274,6 +338,7 @@ class MainWindow(QMainWindow):
         chrome.addWidget(self.click_box)
         chrome.addWidget(self.hide_box)
         chrome.addWidget(self.dictionary_box)
+        chrome.addWidget(self.history_box)
         chrome.addStretch(1)
         layout.addLayout(chrome)
 
@@ -281,13 +346,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.panel, 1)
         self.dictionary = DictionaryWindow()
         self.dictionary.closed.connect(self._on_dictionary_closed)
+        self.history = HistoryWindow()
+        self.history.closed.connect(self._on_history_closed)
+        self._fill_layouts()
 
         self._engine = "Starting OCR…"
         self.resize(440, 580)
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        win32.exclude_from_capture(int(self.winId()))
 
     def _on_pause(self, _checked: bool) -> None:
         self._set_status()
@@ -369,6 +433,144 @@ class MainWindow(QMainWindow):
         self._refresh_panel()
         self._save()
 
+    def _clear_regions(self) -> None:
+        for region in list(self.regions):
+            self.regions.remove(region)
+            self.trackers.pop(region.region_id, None)
+            region.close()
+            region.deleteLater()
+        self._refresh_panel()
+
+    def _region_records(self) -> list[dict]:
+        return [
+            {
+                "x": region.geometry().x(),
+                "y": region.geometry().y(),
+                "w": region.geometry().width(),
+                "h": region.geometry().height(),
+                "rel": list(region.rel) if region.rel else None,
+            }
+            for region in self.regions
+        ]
+
+    def _layout_record(self) -> dict:
+        return {"bound_title": self.bound_title, "regions": self._region_records()}
+
+    def _layout_dirty(self) -> bool:
+        saved = self._layouts.get(self._layout_name)
+        return isinstance(saved, dict) and saved != self._layout_record()
+
+    def _fill_layouts(self) -> None:
+        self.layout_box.blockSignals(True)
+        self.layout_box.clear()
+        for name in self._layouts:
+            self.layout_box.addItem(name)
+        index = self.layout_box.findText(self._layout_name) if self._layout_name else -1
+        self.layout_box.setCurrentIndex(index)
+        self.layout_box.blockSignals(False)
+        self.delete_layout_button.setEnabled(bool(self._layout_name))
+
+    def _select_layout(self, name: str) -> None:
+        self.layout_box.blockSignals(True)
+        index = self.layout_box.findText(name) if name else -1
+        self.layout_box.setCurrentIndex(index)
+        self.layout_box.blockSignals(False)
+        self.delete_layout_button.setEnabled(bool(name) and name in self._layouts)
+
+    def _on_layout_picked(self, index: int) -> None:
+        if index < 0:
+            return
+        name = self.layout_box.itemText(index)
+        if not name or name not in self._layouts:
+            return
+        if name == self._layout_name and not self._layout_dirty():
+            return
+        if self._layout_dirty():
+            answer = QMessageBox.question(
+                self,
+                "Save layout",
+                f'Save changes to "{self._layout_name}"?',
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                self._select_layout(self._layout_name)
+                return
+            if answer == QMessageBox.StandardButton.Yes:
+                self._store_layout(self._layout_name)
+                if name == self._layout_name:
+                    self._select_layout(name)
+                    return
+        self._apply_layout(name)
+
+    def _save_layout_as(self) -> None:
+        suggested = self._layout_name or self.bound_title or ""
+        name, ok = QInputDialog.getText(self, "Save layout", "Name this layout", text=suggested)
+        if not ok:
+            return
+        name = " ".join(name.split())
+        if not name:
+            return
+        if len(name) > 80:
+            name = name[:80].rstrip()
+        if name in self._layouts and name != self._layout_name:
+            answer = QMessageBox.question(self, "Save layout", f'Replace the layout "{name}"?')
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._store_layout(name)
+        self._fill_layouts()
+
+    def _store_layout(self, name: str) -> None:
+        self._layouts[name] = self._layout_record()
+        self._layout_name = name
+        self.delete_layout_button.setEnabled(True)
+        self._save()
+
+    def _delete_layout(self) -> None:
+        name = self._layout_name
+        if not name or name not in self._layouts:
+            return
+        answer = QMessageBox.question(self, "Delete layout", f'Delete the layout "{name}"?')
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        del self._layouts[name]
+        self._layout_name = ""
+        self._fill_layouts()
+        self._save()
+
+    def _apply_layout(self, name: str) -> None:
+        record = self._layouts.get(name)
+        if not isinstance(record, dict):
+            return
+        if self._picking:
+            self._stop_pick()
+        self._clear_regions()
+        self.bound_hwnd = 0
+        self.bound_title = ""
+        self.bind_button.setText("Bind window")
+        for item in record.get("regions") or []:
+            rel = tuple(item["rel"]) if item.get("rel") else None
+            self._add_region(
+                QRect(int(item["x"]), int(item["y"]), int(item["w"]), int(item["h"])),
+                rel,
+            )
+        self._layout_name = name
+        self._select_layout(name)
+        title = record.get("bound_title") or ""
+        if title:
+            hwnd = win32.find_window_by_title(title)
+            if hwnd and hwnd not in self._our_hwnds():
+                self._bind(hwnd, keep_existing_rel=True)
+                return
+            self.bound_title = title
+            shown = title if len(title) <= 42 else title[:42] + "…"
+            self.status.setText(f"{shown} isn't open")
+        else:
+            self._set_status()
+        self._refresh_panel()
+        self._save()
+
     def _renumber(self) -> None:
         for index, region in enumerate(self.regions, 1):
             region.set_index(index)
@@ -426,6 +628,60 @@ class MainWindow(QMainWindow):
             return
         self.dictionary.resize(400, 580)
         self.dictionary.move(max(0, self.x() - 416), self.y())
+
+    def _on_history(self, checked: bool) -> None:
+        if checked:
+            self._place_history()
+            self.history.show()
+            self.history.raise_()
+            self.history.activateWindow()
+        else:
+            self.history.hide()
+        self._save()
+
+    def _on_history_closed(self) -> None:
+        self.history_box.blockSignals(True)
+        self.history_box.setChecked(False)
+        self.history_box.blockSignals(False)
+        self._save()
+
+    def _place_history(self) -> None:
+        if self._history_placed:
+            return
+        self._history_placed = True
+        saved = self._saved.get("history_window")
+        if isinstance(saved, dict) and {"x", "y", "w", "h"} <= saved.keys():
+            self.history.setGeometry(int(saved["x"]), int(saved["y"]), int(saved["w"]), int(saved["h"]))
+            return
+        self.history.resize(380, 580)
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        right = self.x() + self.width() + 16
+        if right + 380 <= screen.right():
+            self.history.move(right, self.y())
+            return
+        left = self.x() - 396
+        if self.dictionary.isVisible():
+            left = self.dictionary.x() - 396
+        self.history.move(max(screen.x(), left), self.y())
+
+    def _spoken(self, text: str) -> tuple[str, str, str]:
+        speaker, body = split_speaker(text.strip())
+        shown = f"{speaker}\n{body}" if speaker else body
+        return speaker, body if speaker else text.strip(), shown
+
+    def _remember(self, text: str, english: str) -> None:
+        speaker, source, shown = self._spoken(text)
+        if not shown.strip():
+            return
+        tokens = None
+        if self.furigana is not None and source.strip():
+            try:
+                tokens = self.furigana.tokens(source, spacing=False)
+            except Exception:
+                tokens = None
+            if speaker and tokens is not None:
+                tokens = [Token(speaker, header=True), Token("", break_line=True), *tokens]
+        self.history.add_line(shown, english, tokens)
 
     def _ensure_dict_worker(self) -> None:
         if self._dict_worker is not None:
@@ -549,7 +805,7 @@ class MainWindow(QMainWindow):
         self._save()
 
     def _our_hwnds(self) -> set[int]:
-        hwnds = {int(self.winId())}
+        hwnds = {int(self.winId()), int(self.dictionary.winId()), int(self.history.winId())}
         for region in self.regions:
             hwnds.add(int(region.winId()))
         return hwnds
@@ -637,6 +893,7 @@ class MainWindow(QMainWindow):
                     changed = True
                     if english:
                         self._translate_failures = 0
+                        self.history.set_english(self._spoken(text)[2], english)
                 continue
             if err and not text:
                 error = err
@@ -648,10 +905,12 @@ class MainWindow(QMainWindow):
                 self._translate_failures = 0
                 tracker.english = english
                 changed = True
+                self._remember(text, english)
             elif text == tracker.text and english and english != tracker.english:
                 self._translate_failures = 0
                 tracker.english = english
                 changed = True
+                self.history.set_english(self._spoken(text)[2], english)
         if changed:
             self._refresh_panel()
         if error and "429" in error:
@@ -718,18 +977,21 @@ class MainWindow(QMainWindow):
             text = tracker.text.strip()
             if not text:
                 continue
+            speaker, source, shown = self._spoken(text)
             tokens = None
-            if self.furigana is not None and (use_ruby or spacing or want_dictionary):
-                tokens = self.furigana.tokens(text, spacing=spacing)
+            if self.furigana is not None and (use_ruby or spacing or want_dictionary) and source.strip():
+                tokens = self.furigana.tokens(source, spacing=spacing)
                 collected.extend(tokens)
             display = tokens if (use_ruby or spacing) else None
             if display is not None and not use_ruby:
                 for token in display:
                     token.reading = None
+            if speaker and display is not None:
+                display = [Token(speaker, header=True), Token("", break_line=True), *display]
             sections.append(
                 (
                     f"Region {region.index}" if multiple else "",
-                    text,
+                    shown,
                     display,
                     tracker.english.strip() if show_english else "",
                     use_ruby,
@@ -748,23 +1010,17 @@ class MainWindow(QMainWindow):
             "click_through": self.click_box.isChecked(),
             "hide_frames": self.hide_box.isChecked(),
             "dictionary": self.dictionary_box.isChecked(),
+            "history": self.history_box.isChecked(),
             "bound_title": self.bound_title,
+            "layout": self._layout_name,
+            "layouts": self._layouts,
             "window": {
                 "x": geometry.x(),
                 "y": geometry.y(),
                 "w": geometry.width(),
                 "h": geometry.height(),
             },
-            "regions": [
-                {
-                    "x": region.geometry().x(),
-                    "y": region.geometry().y(),
-                    "w": region.geometry().width(),
-                    "h": region.geometry().height(),
-                    "rel": list(region.rel) if region.rel else None,
-                }
-                for region in self.regions
-            ],
+            "regions": self._region_records(),
         }
         if self._dictionary_placed:
             placed = self.dictionary.geometry()
@@ -776,6 +1032,16 @@ class MainWindow(QMainWindow):
             }
         elif isinstance(self._saved.get("dictionary_window"), dict):
             data["dictionary_window"] = self._saved["dictionary_window"]
+        if self._history_placed:
+            placed = self.history.geometry()
+            data["history_window"] = {
+                "x": placed.x(),
+                "y": placed.y(),
+                "w": placed.width(),
+                "h": placed.height(),
+            }
+        elif isinstance(self._saved.get("history_window"), dict):
+            data["history_window"] = self._saved["history_window"]
         config.save(data)
 
     def closeEvent(self, event) -> None:
@@ -786,6 +1052,7 @@ class MainWindow(QMainWindow):
         for region in list(self.regions):
             region.close()
         self.dictionary.force_close()
+        self.history.force_close()
         if self._dict_worker is not None:
             self._dict_worker.stop()
             self._dict_worker.wait(15000)

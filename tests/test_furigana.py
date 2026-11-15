@@ -28,13 +28,50 @@ class FuriganaTests(unittest.TestCase):
         self.assertGreater(gaps["は"], 0)
         self.assertGreater(gaps["いい"], 0)
         self.assertGreater(gaps["天気"], 0)
-        self.assertGreater(gaps["です"], gaps["天気"])
+        self.assertGreater(gaps["です"], 0)
+        self.assertEqual(gaps["ね"], 0)
         self.assertEqual(gaps.get("。", 0), 0)
         self.assertEqual(gaps.get("」", 0), 0)
         self.assertTrue(muted["は"])
         self.assertTrue(muted["です"])
+        self.assertTrue(muted["ね"])
         self.assertFalse(muted["今日"])
         self.assertFalse(muted["天気"])
+
+    def test_particle_chains_stay_together(self):
+        tokens = Furigana().tokens("好きなのに行けないんだよ", spacing=True)
+        self.assertEqual(
+            [(token.surface, token.gap_before > 0) for token in tokens],
+            [
+                ("好き", False),
+                ("な", True),
+                ("の", False),
+                ("に", False),
+                ("行け", True),
+                ("ない", True),
+                ("ん", False),
+                ("だ", False),
+                ("よ", False),
+            ],
+        )
+        named = Furigana().tokens("田中さんに会う", spacing=True)
+        self.assertEqual(
+            [(token.surface, token.gap_before > 0) for token in named],
+            [("田中", False), ("さん", True), ("に", False), ("会う", True)],
+        )
+
+    def test_polite_masu_stays_on_the_verb(self):
+        tokens = Furigana().tokens("お願いいたします", spacing=True)
+        self.assertEqual(
+            [(token.surface, token.gap_before > 0) for token in tokens],
+            [("お", False), ("願い", False), ("いたし", True), ("ます", False)],
+        )
+        polite = Furigana().tokens("いたしませんでした", spacing=True)
+        self.assertEqual([token.gap_before for token in polite], [0, 0, 0, 0, 0])
+        weather = Furigana().tokens("天気ですね", spacing=True)
+        gaps = {token.surface: token.gap_before for token in weather}
+        self.assertGreater(gaps["です"], 0)
+        self.assertEqual(gaps["ね"], 0)
 
 
 if __name__ == "__main__":

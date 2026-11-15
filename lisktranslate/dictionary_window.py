@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
-from lisktranslate import win32
 from lisktranslate.dictionary import DictionaryPage
 
 
@@ -41,10 +40,6 @@ class DictionaryWindow(QWidget):
         footer.setFont(QFont("Segoe UI", 8))
         root.addWidget(footer)
         self.show_message("Kanji from the recognized text show up here.")
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        win32.exclude_from_capture(int(self.winId()))
 
     def show_message(self, text: str) -> None:
         self.has_page = False

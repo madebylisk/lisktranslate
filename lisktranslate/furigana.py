@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 
 WORD_GAP = 8
-GRAMMAR_GAP = 14
 _GRAMMAR = {"助詞", "助動詞"}
 _OPENERS = set("「『（([【〈《｛{")
 _CLOSERS = set("」』）)]】〉》｝}、。！？!?…・,.，．")
@@ -105,6 +104,10 @@ def _apply_spacing(tokens: list[Token]) -> None:
         previous = token
 
 
+def _glue(token: Token) -> bool:
+    return token.grammar or token.pos == "接尾辞"
+
+
 def _gap(previous: Token | None, token: Token) -> int:
     if previous is None:
         return 0
@@ -112,10 +115,10 @@ def _gap(previous: Token | None, token: Token) -> int:
         return 0
     if previous.surface and all(ch in _OPENERS for ch in previous.surface):
         return 0
-    if token.pos == "接尾辞":
-        return 3
     if previous.pos == "接頭辞":
         return 0
-    if token.grammar or previous.grammar:
-        return GRAMMAR_GAP
+    if _glue(previous) and _glue(token):
+        return 0
+    if previous.pos == "動詞" and token.lemma == "ます":
+        return 0
     return WORD_GAP
