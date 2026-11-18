@@ -25,6 +25,19 @@ class Token:
     muted: bool = False
 
 
+def with_readings(tokens: list[Token]) -> str:
+    """The sentence with a reading after each kanji word, like 今日（きょう）."""
+    parts: list[str] = []
+    for token in tokens:
+        if token.break_line:
+            parts.append("\n")
+            continue
+        parts.append(token.surface)
+        if token.reading:
+            parts.append(f"（{token.reading}）")
+    return "".join(parts).strip()
+
+
 def kata_to_hira(text: str) -> str:
     chars = []
     for ch in text:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 
 
 Box = tuple[float, float, float, float]
@@ -234,19 +235,127 @@ def _peel_nameplate(items: list[Line]) -> tuple[str, list[Line]]:
     if mid < left - height or mid > right + height:
         return "", items
     body = "".join(part for part, _ in ordered[1:])
-    if len(body) < len(text) + 4 or not any(ch in body for ch in "。！？!?"):
+    if len(body) < len(text) + 4 or not _has_sentence_end(body):
         return "", items
     return text, ordered[1:]
 
 
-def split_speaker(text: str) -> tuple[str, str]:
-    """Split a marked nameplate off the dialogue. Other text is returned unchanged."""
-    if not text.startswith("\x1e"):
-        return "", text
-    speaker, sep, body = text[1:].partition("\n")
+_tagger = None
+_tagger_lock = threading.Lock()
+_ATTACHED = ("から", "まで", "より", "って", "ので", "のに", "のが", "のを", "のは", "のも")
+
+
+def _words(text: str):
+    """Tokenize with the same dictionary furigana uses. None if it cannot load."""
+    global _tagger
+    with _tagger_lock:
+        if _tagger is False:
+            return None
+        if _tagger is None:
+            try:
+                import fugashi
+                import unidic_lite
+
+                _tagger = fugashi.Tagger('-r nul -d "{}"'.format(unidic_lite.DICDIR))
+            except Exception:
+                _tagger = False
+                return None
+        return list(_tagger(text))
+
+
+def _is_katakana(text: str) -> bool:
+    return len(text) >= 2 and all(0x30A0 <= ord(ch) <= 0x30FF for ch in text)
+
+
+def _has_sentence_end(text: str) -> bool:
+    """A line can end with a period, a question, or an ellipsis like .... or ……."""
+    if any(ch in text for ch in "。！？!?…‥"):
+        return True
+    run = 0
+    for ch in text:
+        if ch in ".．・･":
+            run += 1
+            if run >= 2:
+                return True
+        else:
+            run = 0
+    return False
+
+
+def _is_speaker_noun(text: str) -> bool:
+    """A name standing alone, not a verb, a particle phrase, or a word like 今日."""
+    words = _words(text)
+    if not words or "".join(word.surface for word in words) != text:
+        return False
+    # An unknown katakana name is often cut into ordinary words, as ロクロウ becomes ロク and ロウ.
+    if _is_katakana(text) and len(words) >= 2:
+        return all(str(getattr(word.feature, "pos1", "") or "") == "名詞" for word in words)
+    saw_noun = False
+    for word in words:
+        feature = word.feature
+        pos1 = str(getattr(feature, "pos1", "") or "")
+        pos2 = str(getattr(feature, "pos2", "") or "")
+        pos3 = str(getattr(feature, "pos3", "") or "")
+        if pos1 == "接頭辞":
+            if word.surface not in {"お", "ご", "御"}:
+                return False
+            continue
+        if pos1 == "接尾辞" and pos2 == "名詞的":
+            continue
+        if pos1 == "名詞" and (pos2 == "固有名詞" or pos3 == "一般"):
+            saw_noun = True
+            continue
+        return False
+    return saw_noun
+
+
+def _attaches(body: str) -> bool:
+    """The next line continues the name, as in 今日 / はいい天気."""
+    rest = body.lstrip()
+    if not rest:
+        return True
+    first = rest[0]
+    if first in "はがをにとへや":
+        return True
+    if first == "の" and (len(rest) == 1 or not ("\u3041" <= rest[1] <= "\u3096")):
+        return True
+    return rest.startswith(_ATTACHED)
+
+
+def _first_line(text: str) -> str:
+    for part in text.split("\n"):
+        part = "".join(part.split())
+        if part:
+            return part
+    return ""
+
+
+def _split_leading_name(text: str) -> tuple[str, str]:
+    """A short name on its own line is the speaker, even without a wide gap above the line."""
+    line, sep, body = text.partition("\n")
     if not sep or not body.strip():
         return "", text
-    return speaker.strip(), body
+    name = "".join(line.split())
+    if name != line.strip() or not _is_nameplate(name) or _attaches(body):
+        return "", text
+    dialogue = "".join(body.split())
+    if len(dialogue) < max(12, len(name) + 8) or not _has_sentence_end(dialogue):
+        return "", text
+    if len(_first_line(body)) <= len(name):
+        return "", text
+    if not _is_speaker_noun(name):
+        return "", text
+    return name, body
+
+
+def split_speaker(text: str) -> tuple[str, str]:
+    """Split a speaker name off the dialogue. Other text is returned unchanged."""
+    if text.startswith("\x1e"):
+        speaker, sep, body = text[1:].partition("\n")
+        if not sep or not body.strip():
+            return "", text
+        return speaker.strip(), body
+    return _split_leading_name(text)
 
 
 def assemble(items: list[Line], *, vertical: bool | None = None, space: str | None = None) -> str:

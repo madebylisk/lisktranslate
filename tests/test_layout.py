@@ -46,6 +46,55 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(speaker, "街人")
         self.assertEqual(body, "よう、外は寒かっただろ！\n温かいスープはどうだい？")
 
+    def test_name_on_its_own_line_stays_out_of_the_sentence(self):
+        text = (
+            "老人\n"
+            "業魔病は、変わらず広がり続けている。実際に\n"
+            "治安が保たれているのは、限られた大都市部だけだ"
+        )
+        speaker, body = split_speaker(text)
+        self.assertEqual(speaker, "老人")
+        self.assertEqual(
+            body,
+            "業魔病は、変わらず広がり続けている。実際に\n"
+            "治安が保たれているのは、限られた大都市部だけだ",
+        )
+        self.assertEqual(split_speaker("老人\nでも、業魔病は広がり続けている。")[0], "老人")
+
+    def test_katakana_name_with_an_ellipsis_stays_out_of_the_sentence(self):
+        dotted = "ロクロウ\n今の顔....ちょっとソレっぽかったぞ...."
+        speaker, body = split_speaker(dotted)
+        self.assertEqual(speaker, "ロクロウ")
+        self.assertEqual(body, "今の顔....ちょっとソレっぽかったぞ....")
+        for ellipsis in (
+            "ロクロウ\n今の顔・・・ちょっとソレっぽかったぞ・・・",
+            "ロクロウ\n今の顔……ちょっとソレっぽかったぞ……",
+        ):
+            speaker, body = split_speaker(ellipsis)
+            self.assertEqual(speaker, "ロクロウ")
+            self.assertNotIn("ロクロウ", body)
+        self.assertEqual(split_speaker("ダメ\nそうは思わないと、さっきから思っていた。")[0], "")
+        self.assertEqual(split_speaker("ソレ\nちょっと違って見えたぞ……")[0], "")
+
+    def test_close_name_line_stays_out_of_the_sentence(self):
+        text = assemble(
+            [
+                ("老人", (12, 0, 70, 24)),
+                ("業魔病は、変わらず広がり続けている。実際に", (12, 28, 560, 52)),
+                ("治安が保たれているのは、限られた大都市部だけだ", (12, 56, 540, 80)),
+            ]
+        )
+        speaker, body = split_speaker(text)
+        self.assertEqual(speaker, "老人")
+        self.assertNotIn("老人", body)
+        self.assertTrue(body.startswith("業魔病"))
+
+    def test_wrapped_clause_stays_in_the_sentence(self):
+        self.assertEqual(split_speaker("今日\nはいい天気ですね。散歩しましょう。")[0], "")
+        self.assertEqual(split_speaker("変わらず\n広がり続けている。実際に問題だ。")[0], "")
+        self.assertEqual(split_speaker("大都市\n部だけが治安を保っている。")[0], "")
+        self.assertEqual(split_speaker("私\n行かないつもりで、ここで待っている。")[0], "")
+
     def test_hiragana_and_tight_wraps_stay_in_the_sentence(self):
         exclamation = assemble(
             [

@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from lisktranslate.furigana import Token
+
+
+class TextStyle(NamedTuple):
+    name: str
+    reading: int
+    surface: int
+    english: int
+    japanese: int
+    heading: int
+
+
+# Small is the original size of the recognized text and its translation.
+TEXT_STYLES = (
+    TextStyle("Small", 8, 15, 13, 14, 9),
+    TextStyle("Medium", 10, 19, 17, 18, 11),
+    TextStyle("Large", 13, 24, 21, 22, 13),
+    TextStyle("Extra large", 16, 30, 26, 28, 16),
+)
+
+
+def text_style(saved) -> TextStyle:
+    if isinstance(saved, str):
+        for style in TEXT_STYLES:
+            if style.name == saved:
+                return style
+    return TEXT_STYLES[0]
 
 
 class RubyWord(QWidget):
@@ -57,10 +85,14 @@ class _Flow(QWidget):
         reading_size: int = 8,
         surface_size: int = 15,
         pad_right: int = 3,
+        heading_size: int = 9,
+        gap_scale: float = 1,
     ) -> None:
         self._reading_size = reading_size
         self._surface_size = surface_size
         self._pad_right = pad_right
+        self._heading_size = heading_size
+        self._gap_scale = gap_scale
         for item in self._items:
             if item is not None:
                 item.setParent(None)
@@ -72,16 +104,19 @@ class _Flow(QWidget):
                 continue
             if token.header:
                 label = QLabel(token.surface)
-                label.setFont(QFont("Yu Gothic UI", 9))
+                label.setFont(QFont("Yu Gothic UI", self._heading_size))
                 label.setStyleSheet("color: #a1a1aa;")
                 label.setParent(self)
                 self._items.append(label)
                 self._items.append(None)
                 continue
+            gap = token.gap_before
+            if gap and self._gap_scale != 1:
+                gap = round(gap * self._gap_scale)
             word = RubyWord(
                 token.surface,
                 token.reading if show_readings else None,
-                token.gap_before,
+                gap,
                 show_reading_row=show_readings,
                 muted=token.muted,
                 reading_size=self._reading_size,
@@ -131,6 +166,7 @@ class TextPanel(QScrollArea):
         self.placeholder = QLabel("Text shows up here after a region settles.")
         self.placeholder.setWordWrap(True)
         self.placeholder.setStyleSheet("color: #8b8d93;")
+        self._style = TEXT_STYLES[0]
         self._flows: list[_Flow] = []
         self._wrap_labels: list[QLabel] = []
         self.sections = QVBoxLayout()
@@ -140,32 +176,44 @@ class TextPanel(QScrollArea):
         layout.addStretch(1)
         self.setWidget(self.holder)
 
+    def set_style(self, style: TextStyle) -> None:
+        self._style = style
+
     def show_sections(self, sections: list[tuple[str, str, list[Token] | None, str, bool]]) -> None:
         self._clear_sections()
         self.placeholder.setVisible(not sections)
         width = self._content_width()
+        style = self._style
         for title, japanese, tokens, english, show_readings in sections:
             block = QWidget()
             block_layout = QVBoxLayout(block)
             block_layout.setContentsMargins(0, 0, 0, 0)
-            block_layout.setSpacing(6)
+            block_layout.setSpacing(max(6, round(6 * style.surface / 15)))
             if title:
                 heading = QLabel(title)
-                heading.setFont(QFont("Yu Gothic UI", 9))
+                heading.setFont(QFont("Yu Gothic UI", style.heading))
                 heading.setStyleSheet("color: #a1a1aa;")
                 block_layout.addWidget(heading)
             if tokens is not None:
                 flow = _Flow()
                 flow.setFixedWidth(width)
-                flow.set_tokens(tokens, show_readings=show_readings)
+                flow.set_tokens(
+                    tokens,
+                    show_readings=show_readings,
+                    reading_size=style.reading,
+                    surface_size=style.surface,
+                    pad_right=max(3, round(3 * style.surface / 15)),
+                    heading_size=style.heading,
+                    gap_scale=style.surface / 15,
+                )
                 self._flows.append(flow)
                 block_layout.addWidget(flow)
             else:
-                source = self._wrapping_label(japanese, QFont("Yu Gothic UI", 14), "#ececec")
+                source = self._wrapping_label(japanese, QFont("Yu Gothic UI", style.japanese), "#ececec")
                 source.setFixedWidth(width)
                 block_layout.addWidget(source)
             if english:
-                translation = self._wrapping_label(english, QFont("Segoe UI", 13), "#d6e4dc")
+                translation = self._wrapping_label(english, QFont("Segoe UI", style.english), "#d6e4dc")
                 translation.setFixedWidth(width)
                 block_layout.addWidget(translation)
             self.sections.addWidget(block)

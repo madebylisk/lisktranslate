@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
@@ -18,19 +19,30 @@ class HistoryWindowTests(unittest.TestCase):
         self.window.force_close()
 
     def test_keeps_repeats_and_fills_the_latest_english(self):
-        self.window.add_line("今日はいい天気", "", None)
-        self.window.add_line("今日はいい天気", "The weather is nice", None)
-        self.window.add_line("食べました", "", None)
-        self.window.add_line("  ", "", None)
-        self.assertEqual([row.japanese for row in self.window.entries], ["今日はいい天気", "食べました"])
-        self.assertEqual(self.window.entries[0].english, "The weather is nice")
-        self.window.set_english("食べました", "I ate")
-        self.assertEqual(self.window.entries[1].english, "I ate")
-        self.window.add_line("今日はいい天気", "", None)
-        self.window.set_english("今日はいい天気", "Nice weather again")
-        self.assertEqual(len(self.window.entries), 3)
-        self.assertEqual(self.window.entries[0].english, "The weather is nice")
-        self.assertEqual(self.window.entries[2].english, "Nice weather again")
+        self.window.add_line("Region 1", "今日はいい天気", "", None)
+        self.window.add_line("Region 1", "今日はいい天気", "The weather is nice", None)
+        self.window.add_line("Region 1", "食べました", "", None)
+        self.window.add_line("Region 1", "  ", "", None)
+        page = self.window.page("Region 1")
+        self.assertEqual([row.japanese for row in page.entries], ["今日はいい天気", "食べました"])
+        self.assertEqual(page.entries[0].english, "The weather is nice")
+        self.window.set_english("Region 1", "食べました", "I ate")
+        self.assertEqual(page.entries[1].english, "I ate")
+        self.window.add_line("Region 1", "今日はいい天気", "", None)
+        self.window.set_english("Region 1", "今日はいい天気", "Nice weather again")
+        self.assertEqual(len(page.entries), 3)
+        self.assertEqual(page.entries[0].english, "The weather is nice")
+        self.assertEqual(page.entries[2].english, "Nice weather again")
+
+    def test_each_region_has_its_own_tab(self):
+        self.window.add_line("Region 1", "今日", "today", None)
+        self.window.add_line("Region 2", "明日", "tomorrow", None)
+        self.assertEqual(self.window.tabs.count(), 2)
+        self.assertEqual(self.window.tabs.tabText(0), "Region 1")
+        self.assertEqual(self.window.tabs.tabText(1), "Region 2")
+        self.window.set_english("Region 2", "明日", "Tomorrow")
+        self.assertEqual(self.window.page("Region 1").entries[0].english, "today")
+        self.assertEqual(self.window.page("Region 2").entries[0].english, "Tomorrow")
 
 
 class HistorySessionTests(unittest.TestCase):
@@ -77,12 +89,13 @@ class HistorySessionTests(unittest.TestCase):
         )
         window._on_batch(([("ocr", region_id, "食べました。", "", "")], ""))
         window._on_batch(([("translate", region_id, "食べました。", "I ate.", "")], ""))
+        page = window.history.page("Region 1")
         self.assertEqual(
-            [row.japanese for row in window.history.entries],
+            [row.japanese for row in page.entries],
             ["今日はいい天気ですね。", "食べました。"],
         )
-        self.assertEqual(window.history.entries[0].english, "The weather is nice today.")
-        self.assertEqual(window.history.entries[1].english, "I ate.")
+        self.assertEqual(page.entries[0].english, "The weather is nice today.")
+        self.assertEqual(page.entries[1].english, "I ate.")
 
         words = window.history.findChildren(RubyWord)
         self.assertGreaterEqual(len(words), 4)
@@ -96,8 +109,8 @@ class HistorySessionTests(unittest.TestCase):
 
         window.history.show()
         self.app.processEvents()
-        japanese = window.history.entries[0].flow
-        english = window.history.entries[0].english_label
+        japanese = page.entries[0].flow
+        english = page.entries[0].english_label
         self.assertIsNotNone(japanese)
         self.assertGreater(english.mapTo(window.history, english.rect().topLeft()).y(), japanese.y())
         window.history.hide()
@@ -106,3 +119,13 @@ class HistorySessionTests(unittest.TestCase):
             saved = json.load(handle)
         self.assertNotIn("lines", saved)
         self.assertNotIn("history_lines", saved)
+
+        folder = os.path.join(self._dir, "history")
+        window._on_history_folder(folder)
+        files = list(Path(folder).rglob("*.txt"))
+        self.assertEqual(len(files), 1)
+        stored = files[0].read_text(encoding="utf-8")
+        self.assertIn("今日（きょう）", stored)
+        self.assertIn("天気（てんき）", stored)
+        self.assertIn("The weather is nice today.", stored)
+        self.assertIn("I ate.", stored)

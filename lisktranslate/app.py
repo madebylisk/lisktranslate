@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
@@ -32,10 +33,11 @@ from lisktranslate.detect import FrameTracker
 from lisktranslate.dictionary import Dictionary, dictionary_ready
 from lisktranslate.dictionary_window import DictionaryWindow
 from lisktranslate.history_window import HistoryWindow
-from lisktranslate.furigana import Furigana, Token
+from lisktranslate.history_log import HistoryLog
+from lisktranslate.furigana import Furigana, Token, with_readings
 from lisktranslate.layout import split_speaker
 from lisktranslate.ocr_engine import OcrService
-from lisktranslate.panel import TextPanel
+from lisktranslate.panel import TEXT_STYLES, TextPanel, text_style
 from lisktranslate.region import RegionFrame
 from lisktranslate.translate import Translator
 
@@ -225,6 +227,8 @@ class MainWindow(QMainWindow):
         self._dictionary_placed = False
         self._history_placed = False
         self._saved = config.load()
+        self._history_dir = str(self._saved.get("history_dir") or "")
+        self._history_log = HistoryLog(Path(self._history_dir) if self._history_dir else None)
         self._layouts = normalize_layouts(self._saved.get("layouts"))
         self._layout_name = str(self._saved.get("layout") or "")
         if self._layout_name not in self._layouts:
@@ -328,11 +332,21 @@ class MainWindow(QMainWindow):
         self.hide_box.toggled.connect(self._on_options)
         self.dictionary_box.toggled.connect(self._on_dictionary)
         self.history_box.toggled.connect(self._on_history)
+        self.text_size_label = QLabel("Text")
+        self.text_size_label.setToolTip("Size of the Japanese text and the English translation")
+        self.text_size_box = QComboBox()
+        self.text_size_box.setToolTip("Size of the Japanese text and the English translation")
+        for style in TEXT_STYLES:
+            self.text_size_box.addItem(style.name, style.name)
+        chosen = text_style(self._saved.get("text_size"))
+        self.text_size_box.setCurrentIndex(self.text_size_box.findData(chosen.name))
         reading = QHBoxLayout()
         reading.addWidget(self.furigana_box)
         reading.addWidget(self.spacing_box)
         reading.addWidget(self.english_box)
         reading.addStretch(1)
+        reading.addWidget(self.text_size_label)
+        reading.addWidget(self.text_size_box)
         layout.addLayout(reading)
         chrome = QHBoxLayout()
         chrome.addWidget(self.click_box)
@@ -343,15 +357,24 @@ class MainWindow(QMainWindow):
         layout.addLayout(chrome)
 
         self.panel = TextPanel()
+        self.panel.set_style(text_style(self.text_size_box.currentData()))
+        self.text_size_box.currentIndexChanged.connect(self._on_text_size)
         layout.addWidget(self.panel, 1)
         self.dictionary = DictionaryWindow()
         self.dictionary.closed.connect(self._on_dictionary_closed)
         self.history = HistoryWindow()
         self.history.closed.connect(self._on_history_closed)
+        self.history.folder_picked.connect(self._on_history_folder)
+        self.history.set_folder(self._history_dir)
         self._fill_layouts()
 
         self._engine = "Starting OCR…"
         self.resize(440, 580)
+
+    def _on_text_size(self, _index: int) -> None:
+        self.panel.set_style(text_style(self.text_size_box.currentData()))
+        self._refresh_panel()
+        self._save()
 
     def _on_pause(self, _checked: bool) -> None:
         self._set_status()
@@ -645,6 +668,11 @@ class MainWindow(QMainWindow):
         self.history_box.blockSignals(False)
         self._save()
 
+    def _on_history_folder(self, path: str) -> None:
+        self._history_dir = path
+        self._history_log.set_root(Path(path) if path else None)
+        self._save()
+
     def _place_history(self) -> None:
         if self._history_placed:
             return
@@ -669,7 +697,16 @@ class MainWindow(QMainWindow):
         shown = f"{speaker}\n{body}" if speaker else body
         return speaker, body if speaker else text.strip(), shown
 
-    def _remember(self, text: str, english: str) -> None:
+    def _history_group(self) -> str:
+        return self._layout_name.strip() or self.bound_title.strip() or "General"
+
+    def _history_region(self, region_id: int) -> str:
+        for region in self.regions:
+            if region.region_id == region_id:
+                return f"Region {region.index}"
+        return "Region"
+
+    def _remember(self, region_id: int, text: str, english: str) -> None:
         speaker, source, shown = self._spoken(text)
         if not shown.strip():
             return
@@ -681,7 +718,37 @@ class MainWindow(QMainWindow):
                 tokens = None
             if speaker and tokens is not None:
                 tokens = [Token(speaker, header=True), Token("", break_line=True), *tokens]
-        self.history.add_line(shown, english, tokens)
+        region = self._history_region(region_id)
+        self.history.add_line(region, shown, english, tokens)
+        self._history_log.add(
+            self._history_group(),
+            region,
+            shown,
+            english,
+            self._log_furigana(speaker, tokens),
+        )
+
+    def _log_furigana(self, speaker: str, tokens: list[Token] | None) -> str:
+        if not tokens:
+            return ""
+        parts: list[str] = []
+        if speaker and self.furigana is not None:
+            try:
+                parts.append(with_readings(self.furigana.tokens(speaker, spacing=False)))
+            except Exception:
+                parts.append(speaker)
+        elif speaker:
+            parts.append(speaker)
+        body = with_readings([token for token in tokens if not token.header])
+        if body:
+            parts.append(body)
+        return "\n".join(part for part in parts if part).strip()
+
+    def _remember_english(self, region_id: int, text: str, english: str) -> None:
+        shown = self._spoken(text)[2]
+        region = self._history_region(region_id)
+        self.history.set_english(region, shown, english)
+        self._history_log.set_english(self._history_group(), region, shown, english)
 
     def _ensure_dict_worker(self) -> None:
         if self._dict_worker is not None:
@@ -893,7 +960,7 @@ class MainWindow(QMainWindow):
                     changed = True
                     if english:
                         self._translate_failures = 0
-                        self.history.set_english(self._spoken(text)[2], english)
+                        self._remember_english(region_id, text, english)
                 continue
             if err and not text:
                 error = err
@@ -905,12 +972,12 @@ class MainWindow(QMainWindow):
                 self._translate_failures = 0
                 tracker.english = english
                 changed = True
-                self._remember(text, english)
+                self._remember(region_id, text, english)
             elif text == tracker.text and english and english != tracker.english:
                 self._translate_failures = 0
                 tracker.english = english
                 changed = True
-                self.history.set_english(self._spoken(text)[2], english)
+                self._remember_english(region_id, text, english)
         if changed:
             self._refresh_panel()
         if error and "429" in error:
@@ -1011,6 +1078,8 @@ class MainWindow(QMainWindow):
             "hide_frames": self.hide_box.isChecked(),
             "dictionary": self.dictionary_box.isChecked(),
             "history": self.history_box.isChecked(),
+            "history_dir": self._history_dir,
+            "text_size": text_style(self.text_size_box.currentData()).name,
             "bound_title": self.bound_title,
             "layout": self._layout_name,
             "layouts": self._layouts,

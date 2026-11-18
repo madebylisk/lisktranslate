@@ -1,6 +1,6 @@
 import unittest
 
-from lisktranslate.furigana import Furigana, kata_to_hira
+from lisktranslate.furigana import Furigana, Token, kata_to_hira, with_readings
 
 
 class FuriganaTests(unittest.TestCase):
@@ -15,6 +15,16 @@ class FuriganaTests(unittest.TestCase):
         self.assertEqual(readings["天気"], "てんき")
         self.assertIsNone(readings["は"])
         self.assertIsNone(readings["です"])
+        self.assertEqual(with_readings(tokens), "今日（きょう）はいい天気（てんき）です")
+
+    def test_readings_skip_a_speaker_header_and_keep_line_breaks(self):
+        tokens = [
+            Token("田中", header=True),
+            Token("", break_line=True),
+            Token("今日", reading="きょう"),
+            Token("。"),
+        ]
+        self.assertEqual(with_readings([token for token in tokens if not token.header]), "今日（きょう）。")
 
     def test_spacing_separates_words_and_particles(self):
         plain = Furigana().tokens("「今日はいい天気ですね。」")

@@ -21,7 +21,7 @@ lisktranslate
 - **Pause** stops recognition.
 - **Furigana** shows kana above kanji. The text in the window can be selected.
 - **Click through** lets the mouse reach the game. **Hide frames** does that and hides the boxes. Turn them off from this window.
-- **History** opens a window of this session's lines, with furigana and the English under each line.
+- **History** opens a window of this session's lines, with furigana and the English under each line. Each region has its own tab. **Choose folder** saves that history by game, month, and day, one text file per region. Kanji in those files keep their readings, like 今日（きょう）.
 
 Regions are saved in `%APPDATA%\lisktranslate\config.json`. The OCR files are copied once to `%LOCALAPPDATA%\lisktranslate\oneocr`.
 
