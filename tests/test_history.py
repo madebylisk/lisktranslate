@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from lisktranslate.history_window import HistoryWindow
 from lisktranslate.panel import RubyWord
+from lisktranslate.translate import Translator
 
 
 class HistoryWindowTests(unittest.TestCase):
@@ -129,3 +130,37 @@ class HistorySessionTests(unittest.TestCase):
         self.assertIn("天気（てんき）", stored)
         self.assertIn("The weather is nice today.", stored)
         self.assertIn("I ate.", stored)
+
+    def test_english_noise_is_not_shown_or_translated(self):
+        window = self.window
+        region_id = window.regions[0].region_id
+        calls = []
+
+        def fake(texts):
+            calls.append(list(texts))
+            return [f"en:{text}" for text in texts]
+
+        window.worker._translator = Translator(translate=fake)
+        rows = [
+            {"id": 1, "text": "S", "english": "", "err": ""},
+            {"id": 2, "text": "INANTA", "english": "", "err": ""},
+            {"id": 3, "text": "OK\n召窟前", "english": "", "err": ""},
+        ]
+        window.worker.want_english = True
+        window.worker._translate_rows(rows)
+        self.assertEqual(calls, [["召窟前"]])
+        self.assertEqual(rows[0]["text"], "")
+        self.assertEqual(rows[1]["english"], "")
+        self.assertEqual(rows[2]["text"], "召窟前")
+        self.assertEqual(rows[2]["english"], "en:召窟前")
+
+        window._on_batch(([("ocr", region_id, "S", "S", "")], ""))
+        window._on_batch(([("ocr", region_id, "INANTA", "INANTA", "")], ""))
+        self.assertEqual(window.trackers[region_id].text, "")
+        self.assertNotIn("Region 1", window.history._pages)
+        window._on_batch(([("ocr", region_id, "召窟前", "In front of the cave", "")], ""))
+        window._on_batch(([("ocr", region_id, "S\nINANTA", "S", "")], ""))
+        self.assertEqual(window.trackers[region_id].text, "召窟前")
+        self.assertEqual(window.trackers[region_id].english, "In front of the cave")
+        page = window.history.page("Region 1")
+        self.assertEqual([row.japanese for row in page.entries], ["召窟前"])

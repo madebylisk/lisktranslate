@@ -35,7 +35,7 @@ from lisktranslate.dictionary_window import DictionaryWindow
 from lisktranslate.history_window import HistoryWindow
 from lisktranslate.history_log import HistoryLog
 from lisktranslate.furigana import Furigana, Token, with_readings
-from lisktranslate.layout import split_speaker
+from lisktranslate.layout import japanese_text, split_speaker
 from lisktranslate.ocr_engine import OcrService
 from lisktranslate.panel import TEXT_STYLES, TextPanel, text_style
 from lisktranslate.region import RegionFrame
@@ -91,7 +91,14 @@ class _Worker(QThread):
         self._queue.put(None)
 
     def _translate_rows(self, rows: list[dict]) -> None:
-        pending = [row for row in rows if row["text"].strip() and not row["err"]]
+        pending = []
+        for row in rows:
+            if row["err"]:
+                continue
+            source = japanese_text(row["text"])
+            row["text"] = source
+            if source:
+                pending.append(row)
         if not self.want_english or not pending:
             return
         try:
@@ -131,7 +138,7 @@ class _Worker(QThread):
                         rows.append({"id": region_id, "text": "", "english": "", "err": message})
                         continue
                     try:
-                        text = self.service.recognize(image)
+                        text = japanese_text(self.service.recognize(image))
                     except Exception as exc:
                         rows.append({"id": region_id, "text": "", "english": "", "err": str(exc)})
                         continue
@@ -793,12 +800,12 @@ class MainWindow(QMainWindow):
             worker.submit(self._dict_generation, list(tokens))
 
     def _request_translations(self) -> None:
-        batch = [
-            (region.region_id, self.trackers[region.region_id].text)
-            for region in self.regions
-            if self.trackers[region.region_id].text.strip()
-            and not self.trackers[region.region_id].english.strip()
-        ]
+        batch = []
+        for region in self.regions:
+            tracker = self.trackers[region.region_id]
+            text = japanese_text(tracker.text)
+            if text and not tracker.english.strip():
+                batch.append((region.region_id, text))
         if not batch:
             self._refresh_panel()
             return
@@ -955,12 +962,14 @@ class MainWindow(QMainWindow):
                 if err:
                     error = err
                     continue
-                if tracker.text == text and english != tracker.english:
+                source = japanese_text(tracker.text)
+                if text and source == text and english != tracker.english:
+                    tracker.text = source
                     tracker.english = english
                     changed = True
                     if english:
                         self._translate_failures = 0
-                        self._remember_english(region_id, text, english)
+                        self._remember_english(region_id, source, english)
                 continue
             if err and not text:
                 error = err
@@ -968,6 +977,11 @@ class MainWindow(QMainWindow):
                 continue
             if err:
                 error = err
+            if text.strip():
+                cleaned = japanese_text(text)
+                if not cleaned:
+                    continue
+                text = cleaned
             if tracker.accept_text(text):
                 self._translate_failures = 0
                 tracker.english = english
@@ -1041,7 +1055,7 @@ class MainWindow(QMainWindow):
         collected = []
         for region in self.regions:
             tracker = self.trackers[region.region_id]
-            text = tracker.text.strip()
+            text = japanese_text(tracker.text.strip())
             if not text:
                 continue
             speaker, source, shown = self._spoken(text)

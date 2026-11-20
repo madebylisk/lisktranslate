@@ -40,6 +40,44 @@ def _mostly_cjk(text: str) -> bool:
     return cjk * 2 >= len(letters)
 
 
+def _is_kana_or_kanji(ch: str) -> bool:
+    code = ord(ch)
+    if 0x3041 <= code <= 0x3096 or 0x30A1 <= code <= 0x30FA:
+        return True
+    if 0xFF66 <= code <= 0xFF9D and code != 0xFF70:
+        return True
+    if 0x3400 <= code <= 0x4DBF or 0x4E00 <= code <= 0x9FFF or 0xF900 <= code <= 0xFAFF:
+        return True
+    return False
+
+
+def _has_kana_or_kanji(text: str) -> bool:
+    return any(_is_kana_or_kanji(ch) for ch in text)
+
+
+def japanese_text(text: str) -> str:
+    """Lines that contain kana or kanji. English and OCR noise are left out."""
+    if not text or not str(text).strip():
+        return ""
+    text = str(text)
+    kept: list[str] = []
+    for line in text.split("\n"):
+        visible = line[1:] if line.startswith("\x1e") else line
+        if visible.strip() and not _has_kana_or_kanji(visible):
+            continue
+        kept.append(line)
+    while kept and not kept[0].strip():
+        kept.pop(0)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    if not any(_has_kana_or_kanji(line[1:] if line.startswith("\x1e") else line) for line in kept):
+        return ""
+    result = "\n".join(kept)
+    if result.startswith("\x1e") and "\n" not in result:
+        return result[1:].strip()
+    return result
+
+
 def _distance(a: Box, b: Box) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -235,7 +273,7 @@ def _peel_nameplate(items: list[Line]) -> tuple[str, list[Line]]:
     if mid < left - height or mid > right + height:
         return "", items
     body = "".join(part for part, _ in ordered[1:])
-    if len(body) < len(text) + 4 or not _has_sentence_end(body):
+    if len(body) < len(text) + 4:
         return "", items
     return text, ordered[1:]
 
@@ -267,29 +305,23 @@ def _is_katakana(text: str) -> bool:
     return len(text) >= 2 and all(0x30A0 <= ord(ch) <= 0x30FF for ch in text)
 
 
-def _has_sentence_end(text: str) -> bool:
-    """A line can end with a period, a question, or an ellipsis like .... or ……."""
-    if any(ch in text for ch in "。！？!?…‥"):
-        return True
-    run = 0
-    for ch in text:
-        if ch in ".．・･":
-            run += 1
-            if run >= 2:
-                return True
-        else:
-            run = 0
-    return False
+def _is_unknown_katakana_name(text: str) -> bool:
+    """A name the dictionary cuts apart, as ロクロウ becomes ロク and ロウ."""
+    if not _is_katakana(text):
+        return False
+    words = _words(text)
+    if not words or len(words) < 2 or "".join(word.surface for word in words) != text:
+        return False
+    return all(str(getattr(word.feature, "pos1", "") or "") == "名詞" for word in words)
 
 
 def _is_speaker_noun(text: str) -> bool:
     """A name standing alone, not a verb, a particle phrase, or a word like 今日."""
+    if _is_unknown_katakana_name(text):
+        return True
     words = _words(text)
     if not words or "".join(word.surface for word in words) != text:
         return False
-    # An unknown katakana name is often cut into ordinary words, as ロクロウ becomes ロク and ロウ.
-    if _is_katakana(text) and len(words) >= 2:
-        return all(str(getattr(word.feature, "pos1", "") or "") == "名詞" for word in words)
     saw_noun = False
     for word in words:
         feature = word.feature
@@ -330,22 +362,56 @@ def _first_line(text: str) -> str:
     return ""
 
 
+def _long_enough(name: str, dialogue: str) -> bool:
+    compact = "".join(dialogue.split())
+    return len(compact) >= max(8, len(name) + 4)
+
+
+def _speaker_line_name(line: str) -> str:
+    """The name on a speaker line, dropping a stray letter read off the nameplate edge."""
+    compact = "".join(line.split())
+    trimmed = compact.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+    if trimmed and 0 < len(compact) - len(trimmed) <= 2 and _is_nameplate(trimmed):
+        return trimmed
+    if _is_nameplate(compact):
+        return compact
+    return ""
+
+
 def _split_leading_name(text: str) -> tuple[str, str]:
     """A short name on its own line is the speaker, even without a wide gap above the line."""
     line, sep, body = text.partition("\n")
     if not sep or not body.strip():
         return "", text
-    name = "".join(line.split())
-    if name != line.strip() or not _is_nameplate(name) or _attaches(body):
+    name = _speaker_line_name(line)
+    if not name or _attaches(body):
         return "", text
-    dialogue = "".join(body.split())
-    if len(dialogue) < max(12, len(name) + 8) or not _has_sentence_end(dialogue):
-        return "", text
-    if len(_first_line(body)) <= len(name):
+    if not _long_enough(name, body) or len(_first_line(body)) <= len(name):
         return "", text
     if not _is_speaker_noun(name):
         return "", text
     return name, body
+
+
+def _split_glued_name(text: str) -> tuple[str, str]:
+    """A katakana name run straight into the line, as when the nameplate box is as wide as the text."""
+    if "\n" in text:
+        return "", text
+    name = []
+    for ch in text:
+        if 0x30A0 <= ord(ch) <= 0x30FF:
+            name.append(ch)
+            continue
+        break
+    speaker = "".join(name)
+    if not speaker or len(speaker) > 8:
+        return "", text
+    body = text[len(speaker) :]
+    if not body.strip() or _attaches(body) or not _long_enough(speaker, body):
+        return "", text
+    if not _is_unknown_katakana_name(speaker):
+        return "", text
+    return speaker, body
 
 
 def split_speaker(text: str) -> tuple[str, str]:
@@ -355,7 +421,10 @@ def split_speaker(text: str) -> tuple[str, str]:
         if not sep or not body.strip():
             return "", text
         return speaker.strip(), body
-    return _split_leading_name(text)
+    speaker, body = _split_leading_name(text)
+    if speaker:
+        return speaker, body
+    return _split_glued_name(text)
 
 
 def assemble(items: list[Line], *, vertical: bool | None = None, space: str | None = None) -> str:

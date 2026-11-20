@@ -1,6 +1,6 @@
 import unittest
 
-from lisktranslate.layout import assemble, guess_vertical, split_speaker
+from lisktranslate.layout import assemble, guess_vertical, japanese_text, split_speaker
 
 
 class LayoutTests(unittest.TestCase):
@@ -76,6 +76,23 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(split_speaker("ダメ\nそうは思わないと、さっきから思っていた。")[0], "")
         self.assertEqual(split_speaker("ソレ\nちょっと違って見えたぞ……")[0], "")
 
+    def test_name_without_a_period_stays_out_of_the_sentence(self):
+        text = "ロクロウ\nほう、なかなか雅な名前だな"
+        speaker, body = split_speaker(text)
+        self.assertEqual(speaker, "ロクロウ")
+        self.assertEqual(body, "ほう、なかなか雅な名前だな")
+        speaker, body = split_speaker("ロクロウほう、なかなか雅な名前だな")
+        self.assertEqual(speaker, "ロクロウ")
+        self.assertEqual(body, "ほう、なかなか雅な名前だな")
+        self.assertEqual(split_speaker("ウソだな、それは違うと思う")[0], "")
+
+    def test_stray_letter_on_the_nameplate_stays_out_of_the_sentence(self):
+        text = "ベルベット M\n治療してもらった恩があるから\n斬りたくないとでもいうの？"
+        speaker, body = split_speaker(text)
+        self.assertEqual(speaker, "ベルベット")
+        self.assertEqual(body, "治療してもらった恩があるから\n斬りたくないとでもいうの？")
+        self.assertNotIn("M", body)
+
     def test_close_name_line_stays_out_of_the_sentence(self):
         text = assemble(
             [
@@ -112,6 +129,22 @@ class LayoutTests(unittest.TestCase):
         )
         self.assertEqual(split_speaker(wrapped)[0], "")
         self.assertIn("今日", wrapped)
+
+    def test_english_and_noise_are_left_out(self):
+        self.assertEqual(japanese_text("S"), "")
+        self.assertEqual(japanese_text("S\nS"), "")
+        self.assertEqual(japanese_text("INANTA"), "")
+        self.assertEqual(japanese_text("INANTA\nINANTA"), "")
+        self.assertEqual(japanese_text("Hello"), "")
+        self.assertEqual(japanese_text("ＩＮＡＮＴＡ"), "")
+        self.assertEqual(japanese_text("...\n123"), "")
+        self.assertEqual(japanese_text("召窟前"), "召窟前")
+        self.assertEqual(japanese_text("S\n召窟前\nINANTA"), "召窟前")
+        self.assertEqual(japanese_text("OK\nここは洞窟の前"), "ここは洞窟の前")
+        self.assertEqual(japanese_text("Levelが上がった"), "Levelが上がった")
+        self.assertEqual(japanese_text("ﾃｽﾄ"), "ﾃｽﾄ")
+        self.assertEqual(japanese_text("\x1e街人\nよう、外は寒かっただろ！"), "\x1e街人\nよう、外は寒かっただろ！")
+        self.assertEqual(japanese_text("\x1eINANTA\nよう、外は寒かっただろ！"), "よう、外は寒かっただろ！")
 
     def test_vertical_columns_read_right_to_left(self):
         boxes = [(100, 0, 120, 200), (70, 0, 90, 200)]
